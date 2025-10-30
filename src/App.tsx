@@ -1,25 +1,18 @@
-// src/App.tsx
 import { useEffect, useMemo, useState } from "react";
-import { api } from "./api";
-import type { Sensor } from "./api";
 
-/* =========================
-   Helpers & Types
-========================= */
+import { api } from "./api";
+import { Alerts } from "./components/Alerts";
+import { Sparkline } from "./components/Sparkline";
+import { StatCard } from "./components/StatCard";
+import { useSensorData } from "./hooks/useSensorData";
+import type { Sensor, SummaryStat } from "./types";
+
 type Bubble = { role: "user" | "ai"; text: string };
 
-type RangeSummary = {
-  range: "hour" | "day";
-  count: number;
-  stats: {
-    temperature?: { min?: number; max?: number; avg?: number };
-    humidity?: { min?: number; max?: number; avg?: number };
-    tds?: { min?: number; max?: number; avg?: number };
-    ph?: { min?: number; max?: number; avg?: number };
-  };
-};
+const fmt = (n?: number | null, digits = 1) => (typeof n === "number" ? n.toFixed(digits) : "-");
+const fmtInt = (n?: number | null) => (typeof n === "number" ? Math.round(n).toString() : "-");
 
-const okRange = (s?: Sensor) => {
+const okRange = (s?: Sensor | null) => {
   if (!s) return { temp: false, hum: false, tds: false, ph: false };
   return {
     temp: s.temperature >= 25 && s.temperature <= 32,
@@ -30,12 +23,7 @@ const okRange = (s?: Sensor) => {
 };
 
 const mark = (ok: boolean) => (ok ? "✅" : "⚠️");
-const fmt = (n?: number, d = 1) => (typeof n === "number" ? n.toFixed(d) : "-");
-const fmtInt = (n?: number) => (typeof n === "number" ? Math.round(n).toString() : "-");
 
-/* =========================
-   Main Component
-========================= */
 export default function App() {
   const [dark, setDark] = useState(() => localStorage.getItem("dark") === "true");
   const toggleDark = () => {
@@ -49,51 +37,25 @@ export default function App() {
     document.documentElement.classList.toggle("dark", dark);
   }, [dark]);
 
-  const [cur, setCur] = useState<Sensor | null>(null);
-  const [hist, setHist] = useState<Sensor[]>([]);
-  const [sumHour, setSumHour] = useState<RangeSummary | null>(null);
-  const [sumDay, setSumDay] = useState<RangeSummary | null>(null);
-  const [online, setOnline] = useState(true);
+  const { current: cur, history: hist, summaries, online } = useSensorData();
+  const sumHour = summaries.hour;
+  const sumDay = summaries.day;
 
-  // Chat
   const [msg, setMsg] = useState("");
   const [chat, setChat] = useState<Bubble[]>([]);
   const [loadingAI, setLoadingAI] = useState(false);
 
-  // Load sensors
-  useEffect(() => {
-    let timer: number;
-    const load = async () => {
-      try {
-        const [s, h, sh, sd] = await Promise.all([
-          api.sensors(),
-          api.history(),
-          api.summary("hour"),
-          api.summary("day"),
-        ]);
-        setCur(s);
-        setHist(h.slice(-60));
-        setSumHour(sh);
-        setSumDay(sd);
-        setOnline(true);
-      } catch {
-        setOnline(false);
-      } finally {
-        timer = window.setTimeout(load, 10_000);
-      }
-    };
-    load();
-    return () => clearTimeout(timer);
-  }, []);
+  const series = useMemo(
+    () => ({
+      temperature: hist.map((d) => d.temperature),
+      humidity: hist.map((d) => d.humidity),
+      tds: hist.map((d) => d.tds),
+      ph: hist.map((d) => d.ph),
+    }),
+    [hist],
+  );
 
-  const series = useMemo(() => ({
-    temperature: hist.map((d) => d.temperature),
-    humidity: hist.map((d) => d.humidity),
-    tds: hist.map((d) => d.tds),
-    ph: hist.map((d) => d.ph),
-  }), [hist]);
-
-  const rangeOK = okRange(cur);
+  const rangeOK = useMemo(() => okRange(cur), [cur]);
 
   const alerts = useMemo(() => {
     if (!cur) return [] as string[];
@@ -105,17 +67,16 @@ export default function App() {
     return arr;
   }, [cur, rangeOK]);
 
-  // Chat send
   const send = async () => {
     const q = msg.trim();
     if (!q) return;
-    const newChat = [...chat, { role: "user", text: q }];
-    setChat(newChat);
+    const nextChat: Bubble[] = [...chat, { role: "user", text: q }];
+    setChat(nextChat);
     setMsg("");
     setLoadingAI(true);
     try {
-      const r = await api.chat(q);
-      setChat((c) => [...c, { role: "ai", text: r.response }]);
+      const res = await api.chat(q);
+      setChat((c) => [...c, { role: "ai", text: res.response }]);
     } catch {
       setChat((c) => [...c, { role: "ai", text: "AI ไม่พร้อม ลองใหม่อีกทีนะ 🤖" }]);
     } finally {
@@ -125,7 +86,6 @@ export default function App() {
 
   return (
     <div className={`min-h-screen transition-colors ${dark ? "bg-slate-900 text-white" : "bg-white text-slate-900"}`}>
-      {/* Topbar */}
       <header className={`sticky top-0 z-40 border-b ${dark ? "bg-slate-800/80" : "bg-white/80"} backdrop-blur`}>
         <div className="max-w-7xl mx-auto px-4 py-3 flex items-center justify-between">
           <div className="flex items-center gap-2">
@@ -145,65 +105,48 @@ export default function App() {
         </div>
       </header>
 
-      {/* Main content */}
       <main className="max-w-7xl mx-auto px-4 py-6 grid lg:grid-cols-3 gap-6">
-        {/* LEFT */}
         <section className="lg:col-span-2 space-y-6">
-          {/* Metrics */}
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-            <MetricCard label="🌡️ อุณหภูมิ (°C)" value={fmt(cur?.temperature)} ok={rangeOK.temp} />
-            <MetricCard label="💧 ความชื้น (%)" value={fmt(cur?.humidity)} ok={rangeOK.hum} />
-            <MetricCard label="⚗️ TDS (ppm)" value={fmtInt(cur?.tds)} ok={rangeOK.tds} />
-            <MetricCard label="🧪 pH" value={fmt(cur?.ph)} ok={rangeOK.ph} />
+            <StatCard label="🌡️ อุณหภูมิ (°C)" value={fmt(cur?.temperature)} ok={rangeOK.temp} />
+            <StatCard label="💧 ความชื้น (%)" value={fmt(cur?.humidity)} ok={rangeOK.hum} />
+            <StatCard label="⚗️ TDS (ppm)" value={fmtInt(cur?.tds)} ok={rangeOK.tds} />
+            <StatCard label="🧪 pH" value={fmt(cur?.ph)} ok={rangeOK.ph} />
           </div>
 
-          {/* Alerts */}
-          <div className={`rounded-2xl p-4 border ${alerts.length ? "border-amber-300 bg-amber-50/70 dark:bg-yellow-900/30" : "border-emerald-200 bg-emerald-50/60 dark:bg-emerald-900/30"}`}>
-            <div className="font-semibold mb-1">{alerts.length ? "⚠️ ควรตรวจสอบ" : "✅ ปกติทุกค่า"}</div>
-            {alerts.length ? (
-              <ul className="list-disc pl-5 text-sm space-y-1">
-                {alerts.map((a, i) => (
-                  <li key={i}>{a}</li>
-                ))}
-              </ul>
-            ) : (
-              <div className="text-sm opacity-80">ทุกค่าภายในเกณฑ์แนะนำ เหมาะต่อการเจริญเติบโตของพืช 🌿</div>
-            )}
-          </div>
+          <Alerts items={alerts} />
 
-          {/* Charts */}
           <div className="grid md:grid-cols-2 gap-4">
             <Panel title="อุณหภูมิ (°C)">
               <Sparkline data={series.temperature} minAuto padding={4} />
-              <StatRow label="ชั่วโมงนี้" stats={sumHour?.stats?.temperature} unit="°C" />
-              <StatRow label="วันนี้" stats={sumDay?.stats?.temperature} unit="°C" />
+              <StatRow label="ชั่วโมงนี้" stats={sumHour?.stats.temperature} unit="°C" />
+              <StatRow label="วันนี้" stats={sumDay?.stats.temperature} unit="°C" />
             </Panel>
             <Panel title="ความชื้น (%)">
               <Sparkline data={series.humidity} minAuto padding={4} />
-              <StatRow label="ชั่วโมงนี้" stats={sumHour?.stats?.humidity} unit="%" />
-              <StatRow label="วันนี้" stats={sumDay?.stats?.humidity} unit="%" />
+              <StatRow label="ชั่วโมงนี้" stats={sumHour?.stats.humidity} unit="%" />
+              <StatRow label="วันนี้" stats={sumDay?.stats.humidity} unit="%" />
             </Panel>
             <Panel title="TDS (ppm)">
               <Sparkline data={series.tds} minAuto padding={4} />
-              <StatRow label="ชั่วโมงนี้" stats={sumHour?.stats?.tds} unit=" ppm" intOnly />
-              <StatRow label="วันนี้" stats={sumDay?.stats?.tds} unit=" ppm" intOnly />
+              <StatRow label="ชั่วโมงนี้" stats={sumHour?.stats.tds} unit=" ppm" intOnly />
+              <StatRow label="วันนี้" stats={sumDay?.stats.tds} unit=" ppm" intOnly />
             </Panel>
             <Panel title="pH">
               <Sparkline data={series.ph} minAuto padding={4} />
-              <StatRow label="ชั่วโมงนี้" stats={sumHour?.stats?.ph} />
-              <StatRow label="วันนี้" stats={sumDay?.stats?.ph} />
+              <StatRow label="ชั่วโมงนี้" stats={sumHour?.stats.ph} />
+              <StatRow label="วันนี้" stats={sumDay?.stats.ph} />
             </Panel>
           </div>
         </section>
 
-        {/* RIGHT */}
         <aside className="space-y-4">
           <div className="border rounded-2xl p-4 dark:border-slate-700 dark:bg-slate-800/40">
             <div className="font-semibold mb-2">🤖 ผู้ช่วย iHydro AI</div>
             <div className="h-72 overflow-y-auto space-y-2 pr-1">
               {chat.map((m, i) => (
                 <div
-                  key={i}
+                  key={`${m.role}-${i}`}
                   className={`px-3 py-2 rounded-2xl max-w-[85%] ${
                     m.role === "user"
                       ? "ml-auto bg-emerald-100 border border-emerald-300 dark:bg-emerald-700/50"
@@ -216,7 +159,6 @@ export default function App() {
               {loadingAI && <div className="text-sm opacity-60">กำลังพิมพ์…</div>}
             </div>
 
-            {/* Chat input */}
             <div className="mt-3 flex gap-2">
               <input
                 className="flex-1 border rounded-xl px-3 py-2 outline-none focus:ring-2 focus:ring-emerald-200 dark:bg-slate-700 dark:border-slate-600"
@@ -225,16 +167,12 @@ export default function App() {
                 onChange={(e) => setMsg(e.target.value)}
                 onKeyDown={(e) => e.key === "Enter" && send()}
               />
-              <button
-                onClick={send}
-                className="px-4 py-2 rounded-xl bg-emerald-500 text-white hover:bg-emerald-600"
-              >
+              <button onClick={send} className="px-4 py-2 rounded-xl bg-emerald-500 text-white hover:bg-emerald-600">
                 ส่ง
               </button>
             </div>
           </div>
 
-          {/* Quick Overview */}
           <div className="border rounded-2xl p-4 bg-emerald-50/60 dark:bg-emerald-900/30">
             <div className="font-semibold mb-1">ภาพรวมเร็ว 🌿</div>
             <ul className="text-sm space-y-1">
@@ -250,27 +188,6 @@ export default function App() {
   );
 }
 
-/* =========================
-   UI Components
-========================= */
-function MetricCard({ label, value, ok }: { label: string; value: string; ok: boolean }) {
-  return (
-    <div
-      className={`border rounded-2xl p-4 transition-colors ${
-        ok
-          ? "border-emerald-200 bg-emerald-50/60 dark:bg-emerald-900/30"
-          : "border-amber-200 bg-amber-50/60 dark:bg-yellow-900/30"
-      }`}
-    >
-      <div className="text-xs opacity-70">{label}</div>
-      <div className="mt-1 text-2xl font-semibold">{value}</div>
-      <div className={`mt-1 text-xs ${ok ? "text-emerald-700 dark:text-emerald-300" : "text-amber-700 dark:text-yellow-300"}`}>
-        {ok ? "ปกติ" : "ควรตรวจสอบ"}
-      </div>
-    </div>
-  );
-}
-
 function Panel({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <div className="border rounded-2xl p-3 dark:border-slate-700 dark:bg-slate-800/40">
@@ -280,32 +197,8 @@ function Panel({ title, children }: { title: string; children: React.ReactNode }
   );
 }
 
-function Sparkline({ data = [], minAuto = false, padding = 2, width = 400, height = 120 }) {
-  if (!data.length) return <div className="h-[120px] grid place-items-center text-sm opacity-60">ไม่มีข้อมูล</div>;
-  const min = minAuto ? Math.min(...data) : 0;
-  const max = Math.max(...data);
-  const span = Math.max(1e-6, max - min);
-  const pts = data
-    .map((v, i) => {
-      const x = (i / (data.length - 1)) * (width - padding * 2) + padding;
-      const y = height - padding - ((v - min) / span) * (height - padding * 2);
-      return `${x.toFixed(2)},${y.toFixed(2)}`;
-    })
-    .join(" ");
-  const last = data[data.length - 1];
-  const lastX = width - padding;
-  const lastY = height - padding - ((last - min) / span) * (height - padding * 2);
-  return (
-    <svg viewBox={`0 0 ${width} ${height}`} className="w-full h-[120px]">
-      <rect x="0" y="0" width={width} height={height} rx="10" className="fill-white dark:fill-slate-700/30" />
-      <polyline points={pts} fill="none" stroke="#10b981" strokeWidth="2.2" />
-      <circle cx={lastX} cy={lastY} r="3.5" fill="#10b981" />
-    </svg>
-  );
-}
-
-function StatRow({ label, stats, unit = "", intOnly = false }) {
-  const show = (n?: number) => (intOnly ? fmtInt(n) : fmt(n));
+function StatRow({ label, stats, unit = "", intOnly = false }: { label: string; stats?: SummaryStat | null; unit?: string; intOnly?: boolean }) {
+  const show = (n?: number | null) => (intOnly ? fmtInt(n) : fmt(n));
   return (
     <div className="mt-2 grid grid-cols-3 gap-2 text-[13px] text-slate-700 dark:text-slate-300">
       <div className="col-span-3 font-medium">{label}</div>
