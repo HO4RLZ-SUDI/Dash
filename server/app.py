@@ -1,152 +1,110 @@
-import os
-import threading
-import time
-import uuid
-from datetime import datetime, timedelta, timezone
-from typing import Dict, List, Optional
-
-from dotenv import load_dotenv
-from flask import Flask, jsonify, request, session
+from flask import Flask, Response, jsonify, request
 from flask_cors import CORS
-from flask_limiter import Limiter
-from flask_limiter.util import get_remote_address
+import os, json, time, requests
 
-from . import storage
-from .ai import ai_chat
+# ===== CONFIG =====
+HF_TOKEN = os.getenv("HF_TOKEN")  # ใช้ setx HF_TOKEN "your_token" ตั้งค่าไว้ก่อน
+HF_MODEL = "MiniMaxAI/MiniMax-M2:novita"
 
-
-def create_app(config: Optional[Dict[str, str]] = None) -> Flask:
-    load_dotenv()
-
+def create_app():
     app = Flask(__name__)
-    app.config.update(
-        SECRET_KEY=os.getenv("FLASK_SECRET_KEY", "change-this-key"),
-        ENVIRONMENT=os.getenv("ENVIRONMENT", "development"),
-        DATABASE_URL=os.getenv("DATABASE_URL", "sqlite:///ihydro.db"),
-        HF_TOKEN=os.getenv("HF_TOKEN"),
-        HF_MODEL=os.getenv("HF_MODEL", "openai/gpt-oss-20b:groq"),
-        SENSOR_INTERVAL=int(os.getenv("SENSOR_INTERVAL_SECONDS", "10")),
-        MAX_CHAT_HISTORY=int(os.getenv("MAX_CHAT_HISTORY", "10")),
-        MAX_CHAT_MESSAGE_LENGTH=int(os.getenv("MAX_CHAT_MESSAGE_LENGTH", "500")),
-        ALLOWED_ORIGINS=os.getenv("ALLOWED_ORIGINS", ""),
-    )
-    if config:
-        app.config.update(config)
+    CORS(app)
 
-    storage.init_app(app)
+    # 🧠 เก็บค่าล่าสุดจาก Arduino
+    latest_data = {
+        "temperature": 0,
+        "humidity": 0,
+        "tds": 0,
+        "ph": 0,
+        "water_temp": 0
+    }
 
-    if not app.testing:
-        with app.app_context():
-            if not storage.latest_sensor():
-                storage.insert_random_reading()
+    # ===== ROUTES =====
+    @app.route("/")
+    def home():
+        return "✅ Flask Server is running"
 
-    limiter = Limiter(get_remote_address, app=app, default_limits=["120 per hour"])
+    # ===== Arduino อัปโหลดข้อมูลมา =====
+    @app.route("/api/upload", methods=["POST"])
+    def upload_data():
+        nonlocal latest_data
+        data = request.get_json()
+        if not data:
+            return jsonify({"error": "no data"}), 400
+        latest_data.update(data)
+        print("📥 Arduino Data:", latest_data)
+        return jsonify({"status": "ok"})
 
-    _configure_cors(app)
+    # ===== ส่งข้อมูลล่าสุดให้ React แบบ Real-time (SSE) =====
+    @app.route("/api/stream")
+    def stream_data():
+        def generate():
+            last_sent = {}
+            while True:
+                if latest_data != last_sent:
+                    yield f"data: {json.dumps(latest_data)}\n\n"
+                    last_sent = latest_data.copy()
+                time.sleep(1)
+        return Response(generate(), mimetype="text/event-stream")
 
-    @app.before_request
-    def ensure_session_id() -> None:
-        if "chat_session_id" not in session:
-            session["chat_session_id"] = uuid.uuid4().hex
-
-    @app.get("/api/sensors")
-    def get_sensors():
-        reading = storage.latest_sensor()
-        if not reading:
-            return jsonify({}), 404
-        return jsonify(reading)
-
-    @app.get("/api/history")
-    def get_history():
+    # ===== AI Chat (ใช้ Hugging Face inference API) =====
+    @app.route("/api/chat", methods=["POST"])
+    def chat_ai():
         try:
-            limit = int(request.args.get("limit", "50"))
-        except ValueError:
-            return jsonify({"error": "limit must be an integer"}), 400
-        limit = max(1, min(limit, 500))
-        history = storage.sensor_history(limit)
-        return jsonify(history)
+            data = request.get_json()
+            message = data.get("message", "")
+            print("💬 AI request:", message)
 
-    @app.get("/api/summary/<range_name>")
-    def get_summary(range_name: str):
-        window = _resolve_window(range_name, request.args)
-        if not window:
-            return jsonify({"error": "invalid range"}), 400
+            if not HF_TOKEN:
+                return jsonify({"response": "❌ HF_TOKEN is not set"}), 500
 
-        since = datetime.now(timezone.utc) - window
-        stats = storage.summary_since(since)
-        return jsonify({
-            "range": range_name,
-            "count": stats["count"],
-            "stats": stats["metrics"],
-        })
+            url = f"https://api-inference.huggingface.co/models/{HF_MODEL}"
+            headers = {
+                "Authorization": f"Bearer {HF_TOKEN}",
+                "Content-Type": "application/json"
+            }
 
-    @app.post("/api/chat")
-    @limiter.limit("5 per minute")
-    def chat():
-        payload = request.get_json(silent=True) or {}
-        message = payload.get("message")
-        if not isinstance(message, str) or not message.strip():
-            return jsonify({"error": "message is required"}), 400
-        if len(message) > app.config["MAX_CHAT_MESSAGE_LENGTH"]:
-            return (
-                jsonify({"error": "message too long"}),
-                400,
-            )
+            payload = {
+                "inputs": message,
+                "parameters": {"max_new_tokens": 200, "temperature": 0.7}
+            }
 
-        session_id = session["chat_session_id"]
-        storage.append_chat_message(session_id, "user", message)
+            for attempt in range(3):
+                response = requests.post(url, headers=headers, json=payload, timeout=90)
+                print(f"📡 Attempt {attempt+1} → Status: {response.status_code}")
 
-        history = storage.chat_history(session_id, app.config["MAX_CHAT_HISTORY"])
-        reply = ai_chat(app.config["HF_MODEL"], history, message, app.config.get("HF_TOKEN"))
-        storage.append_chat_message(session_id, "assistant", reply)
+                # ✅ สำเร็จ
+                if response.status_code == 200:
+                    try:
+                        result = response.json()
+                        if isinstance(result, list) and len(result) > 0:
+                            reply = result[0].get("generated_text", "").strip()
+                        else:
+                            reply = json.dumps(result)
+                        print("🤖 Reply →", reply)
+                        return jsonify({"response": reply})
+                    except Exception as parse_err:
+                        print("⚠️ Parse error:", parse_err)
+                        print("Response text:", response.text)
+                        return jsonify({"response": "⚠️ Error parsing response"}), 500
 
-        return jsonify({"response": reply})
+                # 🔄 กำลังโหลดโมเดล
+                elif response.status_code == 503:
+                    print("⏳ Model loading... waiting 10s")
+                    time.sleep(10)
+                else:
+                    print("📡 Raw response:", response.text[:400])
 
-    if not app.testing:
-        _start_sensor_thread(app)
+            return jsonify({"response": "🤖 โมเดลไม่ตอบกลับ หรือชื่อโมเดลผิด"}), 500
+
+        except Exception as e:
+            print("❌ Chat error:", e)
+            return jsonify({"response": f"เกิดข้อผิดพลาด: {e}"}), 500
 
     return app
 
 
-def _resolve_window(range_name: str, args) -> Optional[timedelta]:
-    try:
-        if range_name == "hour":
-            minutes = int(args.get("minutes", 60))
-            return timedelta(minutes=max(1, min(minutes, 720)))
-        if range_name == "day":
-            hours = int(args.get("hours", 24))
-            return timedelta(hours=max(1, min(hours, 168)))
-        if range_name == "custom":
-            seconds = int(args.get("seconds", 0))
-            if seconds <= 0:
-                return None
-            return timedelta(seconds=seconds)
-    except (TypeError, ValueError):
-        return None
-    return None
-
-
-def _configure_cors(app: Flask) -> None:
-    origins_env = app.config["ALLOWED_ORIGINS"].strip()
-    origins: List[str]
-    if app.config["ENVIRONMENT"] == "production" and origins_env:
-        origins = [o.strip() for o in origins_env.split(",") if o.strip()]
-        CORS(app, origins=origins, supports_credentials=True)
-    else:
-        CORS(app, supports_credentials=True)
-
-
-def _start_sensor_thread(app: Flask) -> None:
-    interval = app.config["SENSOR_INTERVAL"]
-
-    def auto_update() -> None:
-        with app.app_context():
-            while True:
-                storage.insert_random_reading()
-                time.sleep(interval)
-
-    thread = threading.Thread(target=auto_update, daemon=True)
-    thread.start()
-
-
-__all__ = ["create_app"]
+# ===== MAIN =====
+if __name__ == "__main__":
+    app = create_app()
+    app.run(host="0.0.0.0", port=5000, debug=True)

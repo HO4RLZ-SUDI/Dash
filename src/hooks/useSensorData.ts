@@ -1,95 +1,46 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
+import type { Sensor, SummaryStat } from "../types";
 
-import { api } from "../api";
-import type { Sensor, SummaryResponse } from "../types";
-
-export interface UseSensorDataOptions {
-  intervalSeconds?: number;
-  historyLimit?: number;
-}
-
-interface SensorDataResult {
-  current: Sensor | null;
-  history: Sensor[];
-  summaries: {
-    hour: SummaryResponse | null;
-    day: SummaryResponse | null;
-  };
-  online: boolean;
-  loading: boolean;
-  refresh: () => Promise<void>;
-}
-
-export function useSensorData(options: UseSensorDataOptions = {}): SensorDataResult {
-  const intervalMs = useMemo(
-    () => Math.max(1000, (options.intervalSeconds ?? 10) * 1000),
-    [options.intervalSeconds],
-  );
-  const historyLimit = options.historyLimit ?? 60;
-
+export function useSensorData() {
   const [current, setCurrent] = useState<Sensor | null>(null);
   const [history, setHistory] = useState<Sensor[]>([]);
-  const [summaries, setSummaries] = useState<{ hour: SummaryResponse | null; day: SummaryResponse | null }>(
-    () => ({ hour: null, day: null }),
-  );
-  const [online, setOnline] = useState(true);
-  const [loading, setLoading] = useState(true);
-
-  const load = useCallback(async () => {
-    const [sensor, readings, hourSummary, daySummary] = await Promise.all([
-      api.sensors(),
-      api.history(historyLimit),
-      api.summary("hour"),
-      api.summary("day"),
-    ]);
-    setCurrent(sensor);
-    setHistory(readings);
-    setSummaries({ hour: hourSummary, day: daySummary });
-    setOnline(true);
-  }, [historyLimit]);
-
-  const refresh = useCallback(async () => {
-    setLoading(true);
-    try {
-      await load();
-    } catch (error) {
-      setOnline(false);
-      throw error;
-    } finally {
-      setLoading(false);
-    }
-  }, [load]);
+  const [online, setOnline] = useState(false);
 
   useEffect(() => {
-    let active = true;
-    let timer: number;
-    let firstLoad = true;
+    const evtSource = new EventSource("http://192.168.189.155:5000/api/stream");
+    setOnline(true);
 
-    const tick = async () => {
-      try {
-        await load();
-      } catch {
-        if (!active) return;
-        setOnline(false);
-      } finally {
-        if (firstLoad) {
-          firstLoad = false;
-          setLoading(false);
-        }
-      }
-      if (!active) {
-        return;
-      }
-      timer = window.setTimeout(tick, intervalMs);
+    evtSource.onmessage = (event) => {
+      const data = JSON.parse(event.data);
+      setCurrent(data);
+      setHistory((prev) => [...prev.slice(-49), data]); // เก็บแค่ 50 จุดหลังสุด
     };
 
-    tick();
+    evtSource.onerror = () => setOnline(false);
+    return () => evtSource.close();
+  }, []);
 
-    return () => {
-      active = false;
-      window.clearTimeout(timer);
-    };
-  }, [intervalMs, load]);
+  // ✅ สร้างค่าหลอก SummaryStat ให้ครบ min/max/avg
+  const emptyStat: SummaryStat = { min: 0, max: 0, avg: 0 };
 
-  return { current, history, summaries, online, loading, refresh };
+  const summaries = {
+    hour: {
+      stats: {
+        temperature: emptyStat,
+        humidity: emptyStat,
+        tds: emptyStat,
+        ph: emptyStat,
+      },
+    },
+    day: {
+      stats: {
+        temperature: emptyStat,
+        humidity: emptyStat,
+        tds: emptyStat,
+        ph: emptyStat,
+      },
+    },
+  };
+
+  return { current, history, summaries, online };
 }

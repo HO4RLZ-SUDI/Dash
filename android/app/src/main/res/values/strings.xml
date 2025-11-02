@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">DashApp</string>
+    <string name="title_activity_main">DashApp</string>
+    <string name="package_name">com.example.dashapp</string>
+    <string name="custom_url_scheme">com.example.dashapp</string>
+</resources>

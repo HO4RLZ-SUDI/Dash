@@ -1,8 +1,7 @@
-import { useEffect, useMemo, useState } from "react";
-
+import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "./api";
 import { Alerts } from "./components/Alerts";
-import { Sparkline } from "./components/Sparkline";
+import { GaugeHalf } from "./components/GaugeHalf";
 import { StatCard } from "./components/StatCard";
 import { useSensorData } from "./hooks/useSensorData";
 import type { Sensor, SummaryStat } from "./types";
@@ -37,41 +36,36 @@ export default function App() {
     document.documentElement.classList.toggle("dark", dark);
   }, [dark]);
 
-  const { current: cur, history: hist, summaries, online } = useSensorData();
-  const sumHour = summaries.hour;
-  const sumDay = summaries.day;
+  const { current: cur, summaries, online } = useSensorData();
+  const sumHour = summaries?.hour ?? null;
+  const sumDay = summaries?.day ?? null;
+
 
   const [msg, setMsg] = useState("");
   const [chat, setChat] = useState<Bubble[]>([]);
   const [loadingAI, setLoadingAI] = useState(false);
+  const chatEndRef = useRef<HTMLDivElement>(null);
 
-  const series = useMemo(
-    () => ({
-      temperature: hist.map((d) => d.temperature),
-      humidity: hist.map((d) => d.humidity),
-      tds: hist.map((d) => d.tds),
-      ph: hist.map((d) => d.ph),
-    }),
-    [hist],
-  );
+  useEffect(() => {
+    chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [chat, loadingAI]);
 
   const rangeOK = useMemo(() => okRange(cur), [cur]);
 
   const alerts = useMemo(() => {
     if (!cur) return [] as string[];
     const arr: string[] = [];
-    if (!rangeOK.temp) arr.push(`อุณหภูมิ ${cur.temperature}°C นอกช่วงแนะนำ (25–32°C)`);
-    if (!rangeOK.hum) arr.push(`ความชื้น ${cur.humidity}% นอกช่วงแนะนำ (65–80%)`);
-    if (!rangeOK.tds) arr.push(`TDS ${cur.tds} ppm นอกช่วงแนะนำ (900–1200 ppm)`);
-    if (!rangeOK.ph) arr.push(`pH ${cur.ph} นอกช่วงแนะนำ (5.8–6.8)`);
+    if (!rangeOK.temp) arr.push(`🌡️ อุณหภูมิ ${cur.temperature}°C นอกช่วงแนะนำ (25–32°C)`);
+    if (!rangeOK.hum) arr.push(`💧 ความชื้น ${cur.humidity}% นอกช่วงแนะนำ (65–80%)`);
+    if (!rangeOK.tds) arr.push(`⚗️ TDS ${cur.tds} ppm นอกช่วงแนะนำ (900–1200 ppm)`);
+    if (!rangeOK.ph) arr.push(`🧪 pH ${cur.ph} นอกช่วงแนะนำ (5.8–6.8)`);
     return arr;
   }, [cur, rangeOK]);
 
   const send = async () => {
     const q = msg.trim();
     if (!q) return;
-    const nextChat: Bubble[] = [...chat, { role: "user", text: q }];
-    setChat(nextChat);
+    setChat((c) => [...c, { role: "user", text: q }]);
     setMsg("");
     setLoadingAI(true);
     try {
@@ -85,19 +79,58 @@ export default function App() {
   };
 
   return (
-    <div className={`min-h-screen transition-colors ${dark ? "bg-slate-900 text-white" : "bg-white text-slate-900"}`}>
-      <header className={`sticky top-0 z-40 border-b ${dark ? "bg-slate-800/80" : "bg-white/80"} backdrop-blur`}>
+    <div
+      className={`min-h-screen font-[Kanit] transition-colors duration-500 ${
+        dark ? "bg-[#1A1A1A] text-[#F5EFD7]" : "bg-[#FAFCF8] text-[#2E2E2E]"
+      }`}
+    >
+      {/* Header */}
+      <header
+        className={`sticky top-0 z-40 backdrop-blur border-b ${
+          dark
+            ? "bg-[#1C1C1C]/90 border-[#3A3A3A]"
+            : "bg-[#FAFCF8]/80 border-[#E5EDE4]"
+        }`}
+      >
         <div className="max-w-7xl mx-auto px-4 py-3 flex items-center justify-between">
           <div className="flex items-center gap-2">
-            <div className="h-8 w-8 rounded-lg bg-emerald-500 grid place-items-center text-white font-black">iH</div>
-            <div className="font-semibold">iHydro Dashboard</div>
+            <div
+              className={`h-8 w-8 rounded-lg grid place-items-center text-white font-bold shadow-md ${
+                dark
+                  ? "bg-gradient-to-r from-[#BFA84E] to-[#E6C975]"
+                  : "bg-gradient-to-r from-[#5CC488] to-[#C2E67E]"
+              }`}
+            >
+              iH
+            </div>
+            <div
+              className={`font-semibold tracking-tight text-lg ${
+                dark ? "text-[#E6C975]" : "text-[#366B48]"
+              }`}
+            >
+              iHydro Dashboard
+            </div>
           </div>
           <div className="flex items-center gap-3 text-sm">
-            <span className={`h-2.5 w-2.5 rounded-full ${online ? "bg-emerald-500" : "bg-rose-500"}`} />
-            <span className="opacity-70">{online ? "Online" : "Offline"}</span>
+            <span
+              className={`h-2.5 w-2.5 rounded-full ${
+                online
+                  ? dark
+                    ? "bg-[#E6C975]"
+                    : "bg-[#6BCB93]"
+                  : dark
+                  ? "bg-[#A84A3E]"
+                  : "bg-[#D45E57]"
+              }`}
+            />
+            <span className="opacity-80">{online ? "Online" : "Offline"}</span>
             <button
               onClick={toggleDark}
-              className="ml-3 px-3 py-1 text-xs border rounded-full hover:bg-emerald-100 dark:hover:bg-slate-700"
+              className={`ml-3 px-3 py-1 text-xs border rounded-full transition ${
+                dark
+                  ? "border-[#E6C975]/50 text-[#E6C975] hover:bg-[#2A2A2A]"
+                  : "border-[#A3C7AA] hover:bg-[#E4F1E7]"
+              }`}
             >
               {dark ? "☀️ โหมดสว่าง" : "🌙 โหมดมืด"}
             </button>
@@ -105,6 +138,7 @@ export default function App() {
         </div>
       </header>
 
+      {/* Main */}
       <main className="max-w-7xl mx-auto px-4 py-6 grid lg:grid-cols-3 gap-6">
         <section className="lg:col-span-2 space-y-6">
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
@@ -117,64 +151,146 @@ export default function App() {
           <Alerts items={alerts} />
 
           <div className="grid md:grid-cols-2 gap-4">
-            <Panel title="อุณหภูมิ (°C)">
-              <Sparkline data={series.temperature} minAuto padding={4} />
-              <StatRow label="ชั่วโมงนี้" stats={sumHour?.stats.temperature} unit="°C" />
-              <StatRow label="วันนี้" stats={sumDay?.stats.temperature} unit="°C" />
-            </Panel>
-            <Panel title="ความชื้น (%)">
-              <Sparkline data={series.humidity} minAuto padding={4} />
-              <StatRow label="ชั่วโมงนี้" stats={sumHour?.stats.humidity} unit="%" />
-              <StatRow label="วันนี้" stats={sumDay?.stats.humidity} unit="%" />
-            </Panel>
-            <Panel title="TDS (ppm)">
-              <Sparkline data={series.tds} minAuto padding={4} />
-              <StatRow label="ชั่วโมงนี้" stats={sumHour?.stats.tds} unit=" ppm" intOnly />
-              <StatRow label="วันนี้" stats={sumDay?.stats.tds} unit=" ppm" intOnly />
-            </Panel>
-            <Panel title="pH">
-              <Sparkline data={series.ph} minAuto padding={4} />
-              <StatRow label="ชั่วโมงนี้" stats={sumHour?.stats.ph} />
-              <StatRow label="วันนี้" stats={sumDay?.stats.ph} />
-            </Panel>
+            <Panel title="🌡️ อุณหภูมิ (°C)">
+  <div className="w-full">
+    <GaugeHalf
+      value={cur?.temperature}
+      min={20}
+      max={40}
+      label="อุณหภูมิ (°C)"
+      color={dark ? "#E6C975" : "#5CC488"}
+      dark={dark}
+    />
+  </div>
+  <StatRow label="ชั่วโมงนี้" stats={sumHour?.stats.temperature} unit="°C" />
+  <StatRow label="วันนี้" stats={sumDay?.stats.temperature} unit="°C" />
+</Panel>
+
+<Panel title="💧 ความชื้น (%)">
+  <div className="w-full">
+    <GaugeHalf
+      value={cur?.humidity}
+      min={40}
+      max={100}
+      label="ความชื้น (%)"
+      color={dark ? "#E6C975" : "#50C878"}
+      dark={dark}
+    />
+  </div>
+  <StatRow label="ชั่วโมงนี้" stats={sumHour?.stats.humidity} unit="%" />
+  <StatRow label="วันนี้" stats={sumDay?.stats.humidity} unit="%" />
+</Panel>
+
+<Panel title="⚗️ TDS (ppm)">
+  <div className="w-full">
+    <GaugeHalf
+      value={cur?.tds}
+      min={500}
+      max={1500}
+      label="TDS (ppm)"
+      color={dark ? "#E6C975" : "#007AFF"}
+      dark={dark}
+    />
+  </div>
+  <StatRow label="ชั่วโมงนี้" stats={sumHour?.stats.tds} unit=" ppm" intOnly />
+  <StatRow label="วันนี้" stats={sumDay?.stats.tds} unit=" ppm" intOnly />
+</Panel>
+
+<Panel title="🧪 pH">
+  <div className="w-full">
+    <GaugeHalf
+      value={cur?.ph}
+      min={4}
+      max={8}
+      label="pH"
+      color={dark ? "#E6C975" : "#9B59B6"}
+      dark={dark}
+    />
+  </div>
+  <StatRow label="ชั่วโมงนี้" stats={sumHour?.stats.ph} />
+  <StatRow label="วันนี้" stats={sumDay?.stats.ph} />
+</Panel>
+
           </div>
         </section>
 
         <aside className="space-y-4">
-          <div className="border rounded-2xl p-4 dark:border-slate-700 dark:bg-slate-800/40">
-            <div className="font-semibold mb-2">🤖 ผู้ช่วย iHydro AI</div>
+          {/* AI Chat */}
+          <div
+            className={`rounded-2xl p-4 border transition ${
+              dark
+                ? "border-[#3A3A3A] bg-[#1E1E1E]"
+                : "border-[#DDEEE0] bg-[#FFFFFF]"
+            }`}
+          >
+            <div
+              className={`font-semibold mb-2 ${
+                dark ? "text-[#E6C975]" : "text-[#366B48]"
+              }`}
+            >
+              🤖 ผู้ช่วย iHydro AI
+            </div>
             <div className="h-72 overflow-y-auto space-y-2 pr-1">
               {chat.map((m, i) => (
                 <div
                   key={`${m.role}-${i}`}
                   className={`px-3 py-2 rounded-2xl max-w-[85%] ${
                     m.role === "user"
-                      ? "ml-auto bg-emerald-100 border border-emerald-300 dark:bg-emerald-700/50"
-                      : "bg-slate-100 border dark:bg-slate-700/60"
+                      ? dark
+                        ? "ml-auto bg-[#E6C975]/20 text-[#E6C975]"
+                        : "ml-auto bg-[#E6F8EB] text-[#2E2E2E]"
+                      : dark
+                      ? "bg-[#2B2B2B] text-[#F1EBD6]"
+                      : "bg-[#F5F8F5] text-[#2E2E2E]"
                   }`}
                 >
                   {m.text}
                 </div>
               ))}
-              {loadingAI && <div className="text-sm opacity-60">กำลังพิมพ์…</div>}
+              {loadingAI && <div className="text-sm opacity-70">🤖 กำลังพิมพ์คำตอบ...</div>}
+              <div ref={chatEndRef} />
             </div>
-
             <div className="mt-3 flex gap-2">
               <input
-                className="flex-1 border rounded-xl px-3 py-2 outline-none focus:ring-2 focus:ring-emerald-200 dark:bg-slate-700 dark:border-slate-600"
+                className={`flex-1 border rounded-xl px-3 py-2 outline-none focus:ring-2 ${
+                  dark
+                    ? "border-[#3A3A3A] bg-[#2B2B2B] text-[#E6C975] focus:ring-[#E6C975]/40"
+                    : "border-[#DDEEE0] bg-white focus:ring-emerald-300"
+                }`}
                 placeholder="พิมพ์เช่น: แนะนำการปรับ pH..."
                 value={msg}
                 onChange={(e) => setMsg(e.target.value)}
                 onKeyDown={(e) => e.key === "Enter" && send()}
               />
-              <button onClick={send} className="px-4 py-2 rounded-xl bg-emerald-500 text-white hover:bg-emerald-600">
+              <button
+                onClick={send}
+                disabled={loadingAI}
+                className={`px-4 py-2 rounded-xl font-medium text-white hover:shadow-lg disabled:opacity-50 ${
+                  dark
+                    ? "bg-gradient-to-r from-[#BFA84E] to-[#E6C975]"
+                    : "bg-gradient-to-r from-[#5CC488] to-[#C2E67E]"
+                }`}
+              >
                 ส่ง
               </button>
             </div>
           </div>
 
-          <div className="border rounded-2xl p-4 bg-emerald-50/60 dark:bg-emerald-900/30">
-            <div className="font-semibold mb-1">ภาพรวมเร็ว 🌿</div>
+          {/* Summary */}
+          <div
+            className={`rounded-2xl p-4 border ${
+              dark
+                ? "border-[#3A3A3A] bg-[#222222]"
+                : "border-[#DDEEE0] bg-[#F1F9F3]"
+            }`}
+          >
+            <div
+              className={`font-semibold mb-1 ${
+                dark ? "text-[#E6C975]" : "text-[#366B48]"
+              }`}
+            >
+              ภาพรวมเร็ว 🌿
+            </div>
             <ul className="text-sm space-y-1">
               <li>อุณหภูมิ: {fmt(cur?.temperature)} °C {mark(rangeOK.temp)}</li>
               <li>ความชื้น: {fmt(cur?.humidity)} % {mark(rangeOK.hum)}</li>
@@ -190,21 +306,40 @@ export default function App() {
 
 function Panel({ title, children }: { title: string; children: React.ReactNode }) {
   return (
-    <div className="border rounded-2xl p-3 dark:border-slate-700 dark:bg-slate-800/40">
-      <div className="text-sm font-medium mb-2">{title}</div>
+    <div className="border rounded-2xl p-3 transition shadow-sm dark:shadow-[0_0_15px_rgba(230,201,117,0.15)] border-[#DDEEE0] dark:border-[#3A3A3A] bg-white/95 dark:bg-[#1F1F1F] hover:shadow-lg">
+      <div className="text-sm font-medium mb-2 text-[#366B48] dark:text-[#E6C975]">{title}</div>
       {children}
     </div>
   );
 }
 
-function StatRow({ label, stats, unit = "", intOnly = false }: { label: string; stats?: SummaryStat | null; unit?: string; intOnly?: boolean }) {
+function StatRow({
+  label,
+  stats,
+  unit = "",
+  intOnly = false,
+}: {
+  label: string;
+  stats?: SummaryStat | null;
+  unit?: string;
+  intOnly?: boolean;
+}) {
   const show = (n?: number | null) => (intOnly ? fmtInt(n) : fmt(n));
   return (
-    <div className="mt-2 grid grid-cols-3 gap-2 text-[13px] text-slate-700 dark:text-slate-300">
+    <div className="mt-2 grid grid-cols-3 gap-2 text-[13px] text-[#366B48] dark:text-[#E6C975]">
       <div className="col-span-3 font-medium">{label}</div>
-      <div className="rounded-lg border px-2 py-1 bg-white dark:bg-slate-700">ต่ำสุด: {show(stats?.min)}{unit}</div>
-      <div className="rounded-lg border px-2 py-1 bg-white dark:bg-slate-700">เฉลี่ย: {show(stats?.avg)}{unit}</div>
-      <div className="rounded-lg border px-2 py-1 bg-white dark:bg-slate-700">สูงสุด: {show(stats?.max)}{unit}</div>
+      <div className="rounded-lg border px-2 py-1 bg-[#FFFFFF] dark:bg-[#2B2B2B] border-[#DDEEE0] dark:border-[#3A3A3A]">
+        ต่ำสุด: {show(stats?.min)}
+        {unit}
+      </div>
+      <div className="rounded-lg border px-2 py-1 bg-[#FFFFFF] dark:bg-[#2B2B2B] border-[#DDEEE0] dark:border-[#3A3A3A]">
+        เฉลี่ย: {show(stats?.avg)}
+        {unit}
+      </div>
+      <div className="rounded-lg border px-2 py-1 bg-[#FFFFFF] dark:bg-[#2B2B2B] border-[#DDEEE0] dark:border-[#3A3A3A]">
+        สูงสุด: {show(stats?.max)}
+        {unit}
+      </div>
     </div>
   );
 }

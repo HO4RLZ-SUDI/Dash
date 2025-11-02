@@ -27,3 +27,4 @@ server/ihydro.db
 *.njsproj
 *.sln
 *.sw?
+server/.env

@@ -18,6 +18,7 @@ def init_app(app: Flask) -> None:
     Path(path if not uri else _path_from_uri(path)).parent.mkdir(parents=True, exist_ok=True)
 
     with _connect(app) as conn:
+        # ✅ เพิ่มคอลัมน์ water_temp เข้าไปในตาราง sensor_readings
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS sensor_readings (
@@ -26,7 +27,8 @@ def init_app(app: Flask) -> None:
                 temperature REAL NOT NULL,
                 humidity REAL NOT NULL,
                 tds REAL NOT NULL,
-                ph REAL NOT NULL
+                ph REAL NOT NULL,
+                water_temp REAL DEFAULT 0.0
             )
             """
         )
@@ -73,25 +75,34 @@ def _connection(app: Flask) -> sqlite3.Connection:
     return g._db_conn
 
 
+# ===============================================================
+# 🔹 อ่านค่าล่าสุด
+# ===============================================================
 def latest_sensor() -> Optional[Dict]:
     app = current_app
     conn = _connection(app)
     row = conn.execute(
-        "SELECT timestamp, temperature, humidity, tds, ph FROM sensor_readings ORDER BY timestamp DESC LIMIT 1"
+        "SELECT timestamp, temperature, humidity, tds, ph, water_temp FROM sensor_readings ORDER BY timestamp DESC LIMIT 1"
     ).fetchone()
     return dict(row) if row else None
 
 
+# ===============================================================
+# 🔹 ประวัติย้อนหลัง
+# ===============================================================
 def sensor_history(limit: int) -> List[Dict]:
     app = current_app
     conn = _connection(app)
     rows = conn.execute(
-        "SELECT timestamp, temperature, humidity, tds, ph FROM sensor_readings ORDER BY timestamp DESC LIMIT ?",
+        "SELECT timestamp, temperature, humidity, tds, ph, water_temp FROM sensor_readings ORDER BY timestamp DESC LIMIT ?",
         (limit,),
     ).fetchall()
     return [dict(row) for row in reversed(rows)]
 
 
+# ===============================================================
+# 🔹 สรุปค่าตามช่วงเวลา
+# ===============================================================
 def summary_since(since: datetime) -> Dict:
     app = current_app
     conn = _connection(app)
@@ -110,7 +121,10 @@ def summary_since(since: datetime) -> Dict:
             AVG(tds) as avg_tds,
             MIN(ph) as min_ph,
             MAX(ph) as max_ph,
-            AVG(ph) as avg_ph
+            AVG(ph) as avg_ph,
+            MIN(water_temp) as min_water,
+            MAX(water_temp) as max_water,
+            AVG(water_temp) as avg_water
         FROM sensor_readings
         WHERE timestamp >= ?
         """,
@@ -122,10 +136,14 @@ def summary_since(since: datetime) -> Dict:
         "humidity": _pack_stat(row["min_humidity"], row["max_humidity"], row["avg_humidity"]),
         "tds": _pack_stat(row["min_tds"], row["max_tds"], row["avg_tds"]),
         "ph": _pack_stat(row["min_ph"], row["max_ph"], row["avg_ph"]),
+        "water_temp": _pack_stat(row["min_water"], row["max_water"], row["avg_water"]),
     }
     return {"count": row["count"], "metrics": metrics}
 
 
+# ===============================================================
+# 🔹 สุ่มค่าเซ็นเซอร์จำลอง (ใช้ตอน debug)
+# ===============================================================
 def insert_random_reading() -> None:
     app = current_app
     reading = {
@@ -134,23 +152,46 @@ def insert_random_reading() -> None:
         "humidity": round(random.uniform(50, 90), 1),
         "tds": round(random.uniform(700, 1300), 0),
         "ph": round(random.uniform(5.5, 7.5), 2),
+        "water_temp": round(random.uniform(22, 30), 1),
     }
     insert_reading(reading)
 
 
+# ===============================================================
+# 🔹 เพิ่มข้อมูลจริงจาก Arduino UNO R4 WiFi
+# ===============================================================
+def insert_sensor_reading(data: Dict[str, float]) -> None:
+    app = current_app
+    conn = _connection(app)
+    conn.execute(
+        """
+        INSERT INTO sensor_readings (timestamp, temperature, humidity, tds, ph, water_temp)
+        VALUES (:timestamp, :temperature, :humidity, :tds, :ph, :water_temp)
+        """,
+        data,
+    )
+    conn.commit()
+
+
+# ===============================================================
+# 🔹 ใช้สำหรับข้อมูลที่สร้างภายในแอป (แบบ random)
+# ===============================================================
 def insert_reading(reading: Dict[str, float]) -> None:
     app = current_app
     conn = _connection(app)
     conn.execute(
         """
-        INSERT INTO sensor_readings (timestamp, temperature, humidity, tds, ph)
-        VALUES (:timestamp, :temperature, :humidity, :tds, :ph)
+        INSERT INTO sensor_readings (timestamp, temperature, humidity, tds, ph, water_temp)
+        VALUES (:timestamp, :temperature, :humidity, :tds, :ph, :water_temp)
         """,
         reading,
     )
     conn.commit()
 
 
+# ===============================================================
+# 🔹 แชทบอทเก็บข้อความ
+# ===============================================================
 def append_chat_message(session_id: str, role: str, content: str) -> None:
     app = current_app
     conn = _connection(app)
@@ -177,6 +218,9 @@ def close_connection(exception=None):
         conn.close()
 
 
+# ===============================================================
+# 🔹 Utils
+# ===============================================================
 def _resolve_database_path(database_url: str) -> Tuple[str, bool]:
     if database_url.startswith("sqlite:///"):
         path = database_url.replace("sqlite:///", "", 1)
@@ -197,8 +241,7 @@ def _resolve_database_path(database_url: str) -> Tuple[str, bool]:
 
 def _path_from_uri(uri: str) -> str:
     if uri.startswith("file:"):
-        if uri.startswith("file:"):
-            return uri.split("?", 1)[0][5:]
+        return uri.split("?", 1)[0][5:]
     return uri
 
 
